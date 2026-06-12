@@ -1,9 +1,20 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
+
+interface Card {
+  id: string
+  tipo: 'texto' | 'imagem'
+  conteudo: string
+  x: number
+  y: number
+  parecer: string
+  indice: number
+  analisando: boolean
+}
 
 interface Registro {
   id: string
@@ -13,16 +24,26 @@ interface Registro {
   created_at: string
 }
 
+function indiceColor(indice: number) {
+  if (indice >= 78) return '#6B8F5E'
+  if (indice >= 55) return '#C4A237'
+  return '#C4614A'
+}
+
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
-  const [descricao, setDescricao] = useState('')
-  const [enviando, setEnviando] = useState(false)
+  const [cards, setCards] = useState<Card[]>([])
   const [registros, setRegistros] = useState<Registro[]>([])
-  const [parecer, setParecer] = useState('')
-  const [indice, setIndice] = useState<number | null>(null)
+  const [novoTexto, setNovoTexto] = useState('')
+  const [indiceGeral, setIndiceGeral] = useState<number | null>(null)
+  const [parecerGeral, setParecerGeral] = useState('')
   const [tempoCura, setTempoCura] = useState(false)
   const [countdown, setCountdown] = useState(7)
+  const [dragging, setDragging] = useState<string | null>(null)
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
+  const boardRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
 
   useEffect(() => {
@@ -37,6 +58,21 @@ export default function Dashboard() {
     })
   }, [router])
 
+  useEffect(() => {
+    if (cards.length === 0) {
+      setIndiceGeral(null)
+      setParecerGeral('')
+      return
+    }
+    const analisados = cards.filter(c => c.indice > 0)
+    if (analisados.length === 0) return
+    const media = Math.round(analisados.reduce((acc, c) => acc + c.indice, 0) / analisados.length)
+    setIndiceGeral(media)
+    if (media >= 78) setParecerGeral('Conjunto criativo com alta conformidade ética. O processo como um todo demonstra autoria e intencionalidade.')
+    else if (media >= 55) setParecerGeral('Conformidade moderada no conjunto. Alguns elementos pedem maior contextualização da autoria.')
+    else setParecerGeral('Conjunto com baixo índice ético. Revise as referências e reforce a presença humana no processo.')
+  }, [cards])
+
   async function carregarRegistros(userId: string) {
     const { data } = await supabase
       .from('registros')
@@ -47,39 +83,98 @@ export default function Dashboard() {
     if (data) setRegistros(data)
   }
 
-  function ativarTempoCura() {
-    setTempoCura(true)
-    setCountdown(7)
-    const interval = setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) {
-          clearInterval(interval)
-          setTempoCura(false)
-          return 0
-        }
-        return c - 1
-      })
-    }, 1000)
-  }
-
-  async function handleEnviar() {
-    if (!descricao.trim() || !user) return
-    setEnviando(true)
-    setParecer('')
-    setIndice(null)
+  async function analisarCard(id: string, conteudo: string, userId: string) {
+    setCards(prev => prev.map(c => c.id === id ? { ...c, analisando: true } : c))
 
     const res = await fetch('/api/registros', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ descricao, userId: user.id }),
+      body: JSON.stringify({ descricao: conteudo, userId }),
     })
 
     const data = await res.json()
-    setParecer(data.parecer ?? 'Erro ao obter parecer.')
-    setIndice(data.indice ?? null)
-    setDescricao('')
-    carregarRegistros(user.id)
-    setEnviando(false)
+    setCards(prev => prev.map(c =>
+      c.id === id
+        ? { ...c, parecer: data.parecer ?? 'Sem parecer.', indice: data.indice ?? 50, analisando: false }
+        : c
+    ))
+    carregarRegistros(userId)
+  }
+
+  function adicionarTexto() {
+    if (!novoTexto.trim() || !user) return
+    const id = crypto.randomUUID()
+    const novoCard: Card = {
+      id,
+      tipo: 'texto',
+      conteudo: novoTexto,
+      x: 40 + Math.random() * 200,
+      y: 40 + Math.random() * 100,
+      parecer: '',
+      indice: 0,
+      analisando: false,
+    }
+    setCards(prev => [...prev, novoCard])
+    setNovoTexto('')
+    analisarCard(id, novoTexto, user.id)
+  }
+
+  function adicionarImagem(e: React.ChangeEvent<HTMLInputElement>) {
+    if (!e.target.files?.[0] || !user) return
+    const file = e.target.files[0]
+    const reader = new FileReader()
+    reader.onload = () => {
+      const id = crypto.randomUUID()
+      const src = reader.result as string
+      const novoCard: Card = {
+        id,
+        tipo: 'imagem',
+        conteudo: src,
+        x: 40 + Math.random() * 200,
+        y: 40 + Math.random() * 100,
+        parecer: '',
+        indice: 0,
+        analisando: false,
+      }
+      setCards(prev => [...prev, novoCard])
+      analisarCard(id, 'Imagem de referência visual adicionada ao processo criativo.', user.id)
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
+
+  function removerCard(id: string) {
+    setCards(prev => prev.filter(c => c.id !== id))
+  }
+
+  const onMouseDown = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    const card = cards.find(c => c.id === id)
+    if (!card) return
+    setDragging(id)
+    setDragOffset({ x: e.clientX - card.x, y: e.clientY - card.y })
+  }, [cards])
+
+  const onMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragging) return
+    setCards(prev => prev.map(c =>
+      c.id === dragging
+        ? { ...c, x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y }
+        : c
+    ))
+  }, [dragging, dragOffset])
+
+  const onMouseUp = useCallback(() => setDragging(null), [])
+
+  function ativarTempoCura() {
+    setTempoCura(true)
+    setCountdown(7)
+    const interval = setInterval(() => {
+      setCountdown(c => {
+        if (c <= 1) { clearInterval(interval); setTempoCura(false); return 0 }
+        return c - 1
+      })
+    }, 1000)
   }
 
   async function handleLogout() {
@@ -96,138 +191,210 @@ export default function Dashboard() {
   }
 
   return (
-    <main
-      style={{ fontFamily: "'IM Fell English', Georgia, serif" }}
-      className="min-h-screen bg-[#F4EFEA] flex flex-col"
-    >
+    <main style={{ fontFamily: "'IM Fell English', Georgia, serif" }} className="min-h-screen bg-[#F4EFEA] flex flex-col">
+
       {/* Header */}
-      <header className="flex items-center justify-between px-8 py-4 border-b border-[#C4A882] bg-white/50">
+      <header className="flex items-center justify-between px-8 py-4 border-b border-[#C4A882] bg-white/50 shrink-0">
         <div>
           <h1 className="text-2xl text-[#3B2F1E] tracking-wide">Ateliê</h1>
           <p className="text-xs text-[#8C7355] tracking-widest uppercase">Escudo ativo</p>
         </div>
         <div className="flex items-center gap-6">
           <span className="text-xs text-[#8C7355]">{user?.email}</span>
-          <button
-            onClick={handleLogout}
-            className="text-xs text-[#3B2F1E] border border-[#C4A882] px-4 py-1.5 hover:bg-[#3B2F1E] hover:text-[#F4EFEA] transition-colors tracking-widest uppercase"
-          >
+          <button onClick={handleLogout} className="text-xs text-[#3B2F1E] border border-[#C4A882] px-4 py-1.5 hover:bg-[#3B2F1E] hover:text-[#F4EFEA] transition-colors tracking-widest uppercase">
             Sair
           </button>
         </div>
       </header>
 
-      {/* Three columns */}
-      <div className="flex flex-1 divide-x divide-[#C4A882]">
+      <div className="flex flex-1 divide-x divide-[#C4A882] overflow-hidden">
 
         {/* Berço */}
-        <aside className="w-1/5 p-6 flex flex-col gap-4 overflow-y-auto">
-          <h2 className="text-xs tracking-widest uppercase text-[#8C7355] border-b border-[#C4A882] pb-2">
-            Berço
-          </h2>
-          <p className="text-xs text-[#8C7355]">Últimos registros</p>
-          {registros.length === 0 && (
-            <p className="text-xs text-[#B0956E] italic">Nenhum registro ainda.</p>
-          )}
-          {registros.map((r) => (
-            <div key={r.id} className="border border-[#C4A882] rounded-sm p-3 bg-white/40">
-              <p className="text-xs text-[#3B2F1E] line-clamp-2">{r.descricao}</p>
-              <p className="text-xs text-[#8C7355] mt-1">Índice: {r.indice_etico}%</p>
+        <aside className="w-64 shrink-0 flex flex-col border-r border-[#C4A882] bg-white/30">
+          <div className="p-4 border-b border-[#C4A882]">
+            <h2 className="text-xs tracking-widest uppercase text-[#8C7355]">Berço</h2>
+          </div>
+
+          <div className="p-4 flex flex-col gap-3 border-b border-[#C4A882]">
+            <p className="text-xs text-[#8C7355] uppercase tracking-widest">Adicionar ao board</p>
+
+            <textarea
+              value={novoTexto}
+              onChange={e => setNovoTexto(e.target.value)}
+              placeholder="Conceito, descrição ou ideia..."
+              rows={3}
+              className="w-full border border-[#C4A882] bg-[#FAF7F2] px-3 py-2 text-xs text-[#3B2F1E] placeholder-[#B0956E] focus:outline-none focus:ring-1 focus:ring-[#8C7355] resize-none rounded-sm"
+            />
+            <button
+              onClick={adicionarTexto}
+              disabled={!novoTexto.trim()}
+              className="w-full bg-[#3B2F1E] text-[#F4EFEA] py-2 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors disabled:opacity-40"
+            >
+              + Adicionar texto
+            </button>
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full border border-[#C4A882] text-[#8C7355] py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/20 transition-colors"
+            >
+              + Adicionar imagem
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/*" onChange={adicionarImagem} className="hidden" />
+
+            <button
+              onClick={ativarTempoCura}
+              className="w-full border border-dashed border-[#C4A882] text-[#8C7355] py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/10 transition-colors"
+            >
+              ⧖ Tempo de Cura
+            </button>
+          </div>
+
+          {/* Registros salvos */}
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
+            <p className="text-xs text-[#8C7355] uppercase tracking-widest mb-1">Histórico</p>
+            {registros.length === 0 && <p className="text-xs text-[#B0956E] italic">Nenhum registro ainda.</p>}
+            {registros.map(r => (
+              <div key={r.id} className="border border-[#C4A882] rounded-sm p-2 bg-white/40">
+                <p className="text-xs text-[#3B2F1E] line-clamp-2">{r.descricao}</p>
+                <p className="text-xs mt-1" style={{ color: indiceColor(r.indice_etico) }}>{r.indice_etico}%</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="p-4 border-t border-red-200">
+            <div className="border border-red-400 rounded-sm p-2 bg-red-50/50">
+              <p className="text-xs text-red-700 font-medium">Quarentena Ética</p>
+              <p className="text-xs text-red-500 mt-0.5">Expira em 14h</p>
             </div>
-          ))}
-          <div className="border border-red-400 rounded-sm p-3 bg-red-50/50 mt-auto">
-            <p className="text-xs text-red-700 font-medium">Quarentena Ética</p>
-            <p className="text-xs text-red-500 mt-1">Expira em 14h</p>
           </div>
         </aside>
 
-        {/* Tear */}
-        <main className="flex-1 p-6 flex flex-col gap-4">
-          <h2 className="text-xs tracking-widest uppercase text-[#8C7355] border-b border-[#C4A882] pb-2">
-            Tear
-          </h2>
+        {/* Tear — Board */}
+        <main className="flex-1 relative overflow-hidden">
+          <div className="absolute top-3 left-3 z-10">
+            <p className="text-xs tracking-widest uppercase text-[#8C7355] bg-white/60 px-3 py-1 rounded-sm border border-[#C4A882]">Tear</p>
+          </div>
 
-          {tempoCura ? (
-            <div className="flex-1 border border-[#C4A882] rounded-sm bg-white/30 flex items-center justify-center">
+          {tempoCura && (
+            <div className="absolute inset-0 bg-[#F4EFEA]/90 flex items-center justify-center z-20">
               <div className="text-center">
                 <div className="w-16 h-16 border-2 border-[#C4A882] rounded-full flex items-center justify-center mx-auto mb-4">
                   <span className="text-2xl text-[#8C7355]">⧖</span>
                 </div>
                 <p className="text-sm text-[#8C7355] tracking-wide">TEMPO DE CURA ATIVO</p>
-                <p className="text-xs text-[#B0956E] mt-1">Canvas disponível em {countdown}s</p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col gap-3">
-              <textarea
-                value={descricao}
-                onChange={(e) => setDescricao(e.target.value)}
-                placeholder="Descreva sua atividade criativa... O que você está criando? Quais referências usou? Qual intenção guia o processo?"
-                className="flex-1 w-full border border-[#C4A882] bg-white/40 p-4 text-sm text-[#3B2F1E] placeholder-[#B0956E] focus:outline-none focus:ring-1 focus:ring-[#8C7355] resize-none rounded-sm"
-              />
-              <div className="flex gap-3">
-                <button
-                  onClick={ativarTempoCura}
-                  className="border border-[#C4A882] text-[#8C7355] px-4 py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/20 transition-colors"
-                >
-                  Tempo de Cura
-                </button>
-                <button
-                  onClick={handleEnviar}
-                  disabled={enviando || !descricao.trim()}
-                  className="flex-1 bg-[#3B2F1E] text-[#F4EFEA] py-2 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors disabled:opacity-50"
-                >
-                  {enviando ? 'Analisando...' : 'Registrar e Analisar'}
-                </button>
+                <p className="text-xs text-[#B0956E] mt-1">Board disponível em {countdown}s</p>
               </div>
             </div>
           )}
+
+          {cards.length === 0 && !tempoCura && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <p className="text-sm text-[#C4A882] tracking-wide italic">Adicione elementos pelo Berço</p>
+            </div>
+          )}
+
+          <div
+            ref={boardRef}
+            className="w-full h-full relative"
+            onMouseMove={onMouseMove}
+            onMouseUp={onMouseUp}
+            onMouseLeave={onMouseUp}
+          >
+            {cards.map(card => (
+              <div
+                key={card.id}
+                style={{ position: 'absolute', left: card.x, top: card.y, cursor: dragging === card.id ? 'grabbing' : 'grab', zIndex: dragging === card.id ? 50 : 10 }}
+                className="w-56 bg-white border border-[#C4A882] rounded-sm shadow-md select-none"
+                onMouseDown={e => onMouseDown(e, card.id)}
+              >
+                {/* Card header */}
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#C4A882] bg-[#FAF7F2]">
+                  <span className="text-xs text-[#8C7355] uppercase tracking-widest">{card.tipo}</span>
+                  <button
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={() => removerCard(card.id)}
+                    className="text-xs text-[#C4A882] hover:text-red-500 transition-colors"
+                  >✕</button>
+                </div>
+
+                {/* Card content */}
+                <div className="p-3">
+                  {card.tipo === 'texto' ? (
+                    <p className="text-xs text-[#3B2F1E] leading-relaxed">{card.conteudo}</p>
+                  ) : (
+                    <img src={card.conteudo} alt="referência" className="w-full rounded-sm object-cover max-h-32" />
+                  )}
+                </div>
+
+                {/* Card análise */}
+                <div className="px-3 pb-3">
+                  {card.analisando ? (
+                    <p className="text-xs text-[#8C7355] italic">Analisando...</p>
+                  ) : card.parecer ? (
+                    <>
+                      <div className="w-full bg-[#E8DDD0] rounded-full h-1.5 mb-1">
+                        <div
+                          className="h-1.5 rounded-full transition-all duration-700"
+                          style={{ width: `${card.indice}%`, backgroundColor: indiceColor(card.indice) }}
+                        />
+                      </div>
+                      <p className="text-xs mb-1" style={{ color: indiceColor(card.indice) }}>{card.indice}%</p>
+                      <p className="text-xs text-[#8C7355] leading-relaxed">{card.parecer}</p>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
         </main>
 
         {/* Escudo de Conformidade */}
-        <aside className="w-1/4 p-6 flex flex-col gap-4">
-          <h2 className="text-xs tracking-widest uppercase text-[#8C7355] border-b border-[#C4A882] pb-2">
-            Escudo de Conformidade
-          </h2>
+        <aside className="w-56 shrink-0 flex flex-col border-l border-[#C4A882] bg-white/30">
+          <div className="p-4 border-b border-[#C4A882]">
+            <h2 className="text-xs tracking-widest uppercase text-[#8C7355]">Escudo de Conformidade</h2>
+          </div>
 
-          {indice !== null && (
-            <div className="bg-white/50 border border-[#C4A882] rounded-sm p-3">
-              <p className="text-xs text-[#8C7355] uppercase tracking-widest mb-2">Índice Ético</p>
-              <div className="w-full bg-[#E8DDD0] rounded-full h-2">
-                <div
-                  className="bg-[#8C7355] h-2 rounded-full transition-all duration-700"
-                  style={{ width: `${indice}%` }}
-                />
-              </div>
-              <p className="text-xs text-[#3B2F1E] mt-1 text-right">{indice}%</p>
-            </div>
-          )}
+          <div className="flex-1 p-4 flex flex-col gap-4">
+            {indiceGeral !== null ? (
+              <>
+                <div>
+                  <p className="text-xs text-[#8C7355] uppercase tracking-widest mb-2">Índice Geral</p>
+                  <div className="w-full bg-[#E8DDD0] rounded-full h-2 mb-1">
+                    <div
+                      className="h-2 rounded-full transition-all duration-700"
+                      style={{ width: `${indiceGeral}%`, backgroundColor: indiceColor(indiceGeral) }}
+                    />
+                  </div>
+                  <p className="text-xs text-right font-medium" style={{ color: indiceColor(indiceGeral) }}>{indiceGeral}%</p>
+                </div>
 
-          {parecer && (
-            <div className="bg-white/30 border border-[#C4A882] rounded-sm p-3">
-              <p className="text-xs text-[#8C7355] uppercase tracking-widest mb-2">
-                Parecer do Auditor
-              </p>
-              <p className="text-xs text-[#3B2F1E] leading-relaxed">{parecer}</p>
-            </div>
-          )}
+                <div className="bg-[#FAF7F2] border border-[#C4A882] rounded-sm p-3">
+                  <p className="text-xs text-[#8C7355] uppercase tracking-widest mb-2">Parecer Geral</p>
+                  <p className="text-xs text-[#3B2F1E] leading-relaxed">{parecerGeral}</p>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-[#B0956E] italic">Adicione elementos ao board para ver o índice.</p>
+            )}
 
-          {!parecer && (
-            <div className="bg-white/30 border border-[#C4A882] rounded-sm p-3 flex-1">
+            <div className="mt-auto">
               <p className="text-xs text-[#8C7355] uppercase tracking-widest mb-2">Log</p>
               <ul className="space-y-1 text-xs text-[#3B2F1E]">
-                <li>· Registros: {registros.length}</li>
+                <li>· Cards no board: {cards.length}</li>
+                <li>· Registros salvos: {registros.length}</li>
                 <li>· Último índice: {registros[0]?.indice_etico ?? '—'}%</li>
               </ul>
             </div>
-          )}
+          </div>
 
-          <button
-            onClick={() => carregarRegistros(user!.id)}
-            className="w-full bg-[#3B2F1E] text-[#F4EFEA] py-3 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors mt-auto"
-          >
-            Gerar Log do Processo
-          </button>
+          <div className="p-4 border-t border-[#C4A882]">
+            <button
+              onClick={() => user && carregarRegistros(user.id)}
+              className="w-full bg-[#3B2F1E] text-[#F4EFEA] py-3 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors"
+            >
+              Gerar Log
+            </button>
+          </div>
         </aside>
       </div>
     </main>
