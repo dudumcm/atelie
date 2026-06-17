@@ -24,6 +24,33 @@ interface Registro {
   created_at: string
 }
 
+interface Conexao {
+  de: string
+  para: string
+  cardGeradoId: string
+}
+
+const TEMPO_CURA_DURACAO = 45
+
+const REFLEXOES = {
+  texto: [
+    'Esta ideia é genuinamente sua ou uma influência ainda não processada?',
+    'Quem poderia ser impactado por este conceito — para o bem e para o mal?',
+    'Esta ideia respeita a cultura que a inspirou? Como aprofundar essa relação?',
+    'Se você não pudesse usar IA neste projeto, o que mudaria no processo?',
+    'Qual a intenção por trás deste conceito? Ela é clara para você?',
+    'Este registro documenta uma escolha consciente ou um impulso não refletido?',
+  ],
+  imagem: [
+    'De onde vem esta imagem? Você tem autoridade para usá-la como referência?',
+    'O que esta imagem carrega que palavras não conseguem descrever?',
+    'Esta imagem pertence a uma cultura específica. Como você pode honrá-la?',
+    'Como você transformará esta influência em algo genuinamente seu?',
+    'Que memória ou emoção esta referência visual desperta em você?',
+    'O que nesta imagem ainda não foi visto ou explorado por outros?',
+  ],
+}
+
 function indiceColor(indice: number) {
   if (indice >= 78) return '#6B8F5E'
   if (indice >= 55) return '#C4A237'
@@ -38,6 +65,14 @@ function formatarData(iso: string) {
   const hora = d.getHours().toString().padStart(2, '0')
   const min = d.getMinutes().toString().padStart(2, '0')
   return `${dia} ${mes} ${ano} · ${hora}:${min}`
+}
+
+function formatarTempoCura(segundos: number) {
+  if (segundos === 0) return '—'
+  if (segundos < 60) return `${segundos}s`
+  const m = Math.floor(segundos / 60)
+  const s = segundos % 60
+  return s === 0 ? `${m}min` : `${m}min ${s}s`
 }
 
 async function comprimirImagem(file: File): Promise<string> {
@@ -73,9 +108,17 @@ export default function Dashboard() {
   const [parecerGeral, setParecerGeral] = useState('')
   const [gerandoParecer, setGerandoParecer] = useState(false)
   const [tempoCura, setTempoCura] = useState(false)
-  const [countdown, setCountdown] = useState(7)
+  const [tempoCuraMensagem, setTempoCuraMensagem] = useState('')
+  const [tempoCuraTotal, setTempoCuraTotal] = useState(0)
+  const [countdown, setCountdown] = useState(TEMPO_CURA_DURACAO)
   const [dragging, setDragging] = useState<string | null>(null)
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
+  const [modoConexao, setModoConexao] = useState(false)
+  const [selecionados, setSelecionados] = useState<string[]>([])
+  const [conexoes, setConexoes] = useState<Conexao[]>([])
+  const [gerandoConexao, setGerandoConexao] = useState(false)
+  const [erroConexao, setErroConexao] = useState('')
+  const [cardParaRemover, setCardParaRemover] = useState<string | null>(null)
   const boardRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
@@ -124,9 +167,25 @@ export default function Dashboard() {
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: true })
-    if (data) {
-      setCards(data.map(c => ({ ...c, analisando: false })))
-    }
+    if (data) setCards(data.map(c => ({ ...c, analisando: false })))
+  }
+
+  function iniciarTempoCura(tipo: 'texto' | 'imagem') {
+    const lista = REFLEXOES[tipo]
+    setTempoCuraMensagem(lista[Math.floor(Math.random() * lista.length)])
+    setTempoCura(true)
+    setCountdown(TEMPO_CURA_DURACAO)
+    const interval = setInterval(() => {
+      setCountdown(c => {
+        if (c <= 1) {
+          clearInterval(interval)
+          setTempoCura(false)
+          setTempoCuraTotal(prev => prev + TEMPO_CURA_DURACAO)
+          return 0
+        }
+        return c - 1
+      })
+    }, 1000)
   }
 
   async function analisarCard(id: string, conteudo: string, userId: string) {
@@ -152,7 +211,7 @@ export default function Dashboard() {
   }
 
   async function adicionarTexto() {
-    if (!novoTexto.trim() || !user) return
+    if (!novoTexto.trim() || !user || tempoCura) return
     const id = crypto.randomUUID()
     const x = 40 + Math.random() * 200
     const y = 40 + Math.random() * 100
@@ -164,10 +223,11 @@ export default function Dashboard() {
     await supabase.from('cards').insert({ id, user_id: user.id, tipo: 'texto', conteudo, x, y, parecer: '', indice: 0 })
 
     analisarCard(id, conteudo, user.id)
+    iniciarTempoCura('texto')
   }
 
   async function adicionarImagem(e: React.ChangeEvent<HTMLInputElement>) {
-    if (!e.target.files?.[0] || !user) return
+    if (!e.target.files?.[0] || !user || tempoCura) return
     const file = e.target.files[0]
     e.target.value = ''
 
@@ -181,21 +241,86 @@ export default function Dashboard() {
     await supabase.from('cards').insert({ id, user_id: user.id, tipo: 'imagem', conteudo, x, y, parecer: '', indice: 0 })
 
     analisarCard(id, 'Imagem de referência visual adicionada ao processo criativo.', user.id)
+    iniciarTempoCura('imagem')
   }
 
   async function removerCard(id: string) {
     if (!user) return
     setCards(prev => prev.filter(c => c.id !== id))
+    setConexoes(prev => prev.filter(c => c.de !== id && c.para !== id && c.cardGeradoId !== id))
+    setSelecionados(prev => prev.filter(s => s !== id))
+    setCardParaRemover(null)
     await supabase.from('cards').delete().eq('id', id).eq('user_id', user.id)
+  }
+
+  function toggleModoConexao() {
+    setModoConexao(prev => !prev)
+    setSelecionados([])
+  }
+
+  async function gerarConexao() {
+    if (!user || selecionados.length < 2) return
+    const cardsSel = cards.filter(c => selecionados.includes(c.id))
+
+    setGerandoConexao(true)
+    setErroConexao('')
+    try {
+      const res = await fetch('/api/conectar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cards: cardsSel.map(c => ({
+            tipo: c.tipo,
+            conteudo: c.tipo === 'texto' ? c.conteudo : 'Referência visual',
+            parecer: c.parecer,
+            indice: c.indice,
+          }))
+        }),
+      })
+
+      const data = await res.json()
+
+      if (data.error) {
+        setErroConexao('Não foi possível gerar a ideia. Tente novamente.')
+      } else if (data.conteudo) {
+        const id = crypto.randomUUID()
+
+        for (let i = 0; i < selecionados.length - 1; i++) {
+          setConexoes(prev => [...prev, { de: selecionados[i], para: selecionados[i + 1], cardGeradoId: id }])
+        }
+
+        const avgX = cardsSel.reduce((a, c) => a + c.x, 0) / cardsSel.length
+        const maxY = Math.max(...cardsSel.map(c => c.y))
+        const x = Math.max(20, avgX - 112)
+        const y = maxY + 190
+
+        setCards(prev => [...prev, { id, tipo: 'texto', conteudo: data.conteudo, x, y, parecer: '', indice: 0, analisando: false }])
+        await supabase.from('cards').insert({ id, user_id: user.id, tipo: 'texto', conteudo: data.conteudo, x, y, parecer: '', indice: 0 })
+        analisarCard(id, data.conteudo, user.id)
+        setSelecionados([])
+        setModoConexao(false)
+        iniciarTempoCura('texto')
+      }
+    } catch {
+      setErroConexao('Erro de conexão. Verifique o servidor.')
+    } finally {
+      setGerandoConexao(false)
+    }
   }
 
   const onMouseDown = useCallback((e: React.MouseEvent, id: string) => {
     e.preventDefault()
+    if (modoConexao) {
+      setSelecionados(prev =>
+        prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
+      )
+      return
+    }
     const card = cards.find(c => c.id === id)
     if (!card) return
     setDragging(id)
     setDragOffset({ x: e.clientX - card.x, y: e.clientY - card.y })
-  }, [cards])
+  }, [cards, modoConexao])
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     if (!dragging) return
@@ -215,17 +340,6 @@ export default function Dashboard() {
     }
     setDragging(null)
   }, [dragging, cards, user])
-
-  function ativarTempoCura() {
-    setTempoCura(true)
-    setCountdown(7)
-    const interval = setInterval(() => {
-      setCountdown(c => {
-        if (c <= 1) { clearInterval(interval); setTempoCura(false); return 0 }
-        return c - 1
-      })
-    }, 1000)
-  }
 
   async function handleGerarLog() {
     if (!user || indiceGeral === null) return
@@ -296,30 +410,68 @@ export default function Dashboard() {
               onChange={e => setNovoTexto(e.target.value)}
               placeholder="Conceito, descrição ou ideia..."
               rows={3}
-              className="w-full border border-[#C4A882] bg-[#FAF7F2] px-3 py-2 text-xs text-[#3B2F1E] placeholder-[#B0956E] focus:outline-none focus:ring-1 focus:ring-[#8C7355] resize-none rounded-sm"
+              disabled={tempoCura}
+              className="w-full border border-[#C4A882] bg-[#FAF7F2] px-3 py-2 text-xs text-[#3B2F1E] placeholder-[#B0956E] focus:outline-none focus:ring-1 focus:ring-[#8C7355] resize-none rounded-sm disabled:opacity-40"
             />
             <button
               onClick={adicionarTexto}
-              disabled={!novoTexto.trim()}
+              disabled={!novoTexto.trim() || tempoCura}
               className="w-full bg-[#3B2F1E] text-[#F4EFEA] py-2 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors disabled:opacity-40"
             >
               + Adicionar texto
             </button>
 
             <button
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full border border-[#C4A882] text-[#8C7355] py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/20 transition-colors"
+              onClick={() => !tempoCura && fileInputRef.current?.click()}
+              disabled={tempoCura}
+              className="w-full border border-[#C4A882] text-[#8C7355] py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/20 transition-colors disabled:opacity-40"
             >
               + Adicionar imagem
             </button>
             <input ref={fileInputRef} type="file" accept="image/*" onChange={adicionarImagem} className="hidden" />
 
+            {tempoCura && (
+              <p className="text-[10px] text-[#C4A237] italic text-center tracking-wide">
+                Board disponível em {countdown}s
+              </p>
+            )}
+          </div>
+
+          {/* Conexão criativa */}
+          <div className="p-4 flex flex-col gap-2 border-b border-[#C4A882]">
+            <p className="text-xs text-[#8C7355] uppercase tracking-widest">Conexão criativa</p>
+
             <button
-              onClick={ativarTempoCura}
-              className="w-full border border-dashed border-[#C4A882] text-[#8C7355] py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/10 transition-colors"
+              onClick={toggleModoConexao}
+              disabled={tempoCura}
+              className={`w-full py-2 text-xs tracking-widest uppercase transition-colors border disabled:opacity-40 ${
+                modoConexao
+                  ? 'bg-[#6B8F5E] text-white border-[#6B8F5E]'
+                  : 'border-[#C4A882] text-[#8C7355] hover:bg-[#C4A882]/20'
+              }`}
             >
-              ⧖ Tempo de Cura
+              {modoConexao ? '× Cancelar' : '⊕ Ligar Cards'}
             </button>
+
+            {modoConexao && (
+              <>
+                <p className="text-xs text-[#8C7355] italic leading-relaxed">
+                  {selecionados.length < 2
+                    ? `Selecione ${2 - selecionados.length} card${2 - selecionados.length === 1 ? '' : 's'} no board.`
+                    : `${selecionados.length} cards selecionados.`}
+                </p>
+                <button
+                  onClick={gerarConexao}
+                  disabled={selecionados.length < 2 || gerandoConexao}
+                  className="w-full bg-[#6B8F5E] text-white py-2 text-xs tracking-widest uppercase hover:bg-[#5a7a50] transition-colors disabled:opacity-40"
+                >
+                  {gerandoConexao ? 'Gerando...' : '✦ Gerar Ideia'}
+                </button>
+                {erroConexao && (
+                  <p className="text-[10px] text-red-500 leading-relaxed">{erroConexao}</p>
+                )}
+              </>
+            )}
           </div>
 
           {/* Registros salvos */}
@@ -359,14 +511,31 @@ export default function Dashboard() {
             <p className="text-xs tracking-widest uppercase text-[#8C7355] bg-white/60 px-3 py-1 rounded-sm border border-[#C4A882]">Tear</p>
           </div>
 
+          {modoConexao && !tempoCura && (
+            <div className="absolute top-3 left-0 right-0 flex justify-center z-10 pointer-events-none">
+              <p className="text-xs text-[#6B8F5E] bg-white/90 px-4 py-1.5 border border-[#6B8F5E] rounded-sm tracking-widest uppercase">
+                Modo Conexão — clique nos cards para selecionar
+              </p>
+            </div>
+          )}
+
+          {/* Overlay Tempo de Cura */}
           {tempoCura && (
-            <div className="absolute inset-0 bg-[#F4EFEA]/90 flex items-center justify-center z-20">
-              <div className="text-center">
-                <div className="w-16 h-16 border-2 border-[#C4A882] rounded-full flex items-center justify-center mx-auto mb-4">
-                  <span className="text-2xl text-[#8C7355]">⧖</span>
+            <div className="absolute inset-0 bg-[#F4EFEA]/95 flex items-center justify-center z-20">
+              <div className="text-center max-w-sm px-8">
+                <p className="text-[10px] text-[#C4A237] tracking-widest uppercase mb-6">Tempo de Cura</p>
+
+                <p className="text-base text-[#3B2F1E] leading-relaxed mb-8 italic">
+                  &ldquo;{tempoCuraMensagem}&rdquo;
+                </p>
+
+                <div className="w-full bg-[#E8DDD0] rounded-full h-1 mb-3">
+                  <div
+                    className="h-1 rounded-full bg-[#C4A237] transition-all duration-1000"
+                    style={{ width: `${(countdown / TEMPO_CURA_DURACAO) * 100}%` }}
+                  />
                 </div>
-                <p className="text-sm text-[#8C7355] tracking-wide">TEMPO DE CURA ATIVO</p>
-                <p className="text-xs text-[#B0956E] mt-1">Board disponível em {countdown}s</p>
+                <p className="text-xs text-[#B0956E] tracking-widest">{countdown}s</p>
               </div>
             </div>
           )}
@@ -384,24 +553,82 @@ export default function Dashboard() {
             onMouseUp={onMouseUp}
             onMouseLeave={onMouseUp}
           >
+            {/* SVG layer para linhas de conexão */}
+            <svg className="absolute inset-0 w-full h-full" style={{ zIndex: 5, pointerEvents: 'none' }}>
+              {conexoes.map((conn, i) => {
+                const from = cards.find(c => c.id === conn.de)
+                const to = cards.find(c => c.id === conn.para)
+                if (!from || !to) return null
+                const x1 = from.x + 112; const y1 = from.y + 40
+                const x2 = to.x + 112;   const y2 = to.y + 40
+                const mx = (x1 + x2) / 2; const my = (y1 + y2) / 2
+                return (
+                  <g key={`conn-${i}`}>
+                    <line
+                      x1={x1} y1={y1} x2={x2} y2={y2}
+                      stroke="#6B8F5E" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.6"
+                    />
+                    <g
+                      style={{ pointerEvents: 'all', cursor: 'pointer' }}
+                      onClick={async () => {
+                        const cardGeradoId = conn.cardGeradoId
+                        setConexoes(prev => prev.filter(c => c.cardGeradoId !== cardGeradoId))
+                        setCards(prev => prev.filter(c => c.id !== cardGeradoId))
+                        if (user) await supabase.from('cards').delete().eq('id', cardGeradoId).eq('user_id', user.id)
+                      }}
+                    >
+                      <circle cx={mx} cy={my} r={9} fill="white" stroke="#C4A882" strokeWidth="1" />
+                      <text x={mx} y={my + 4} textAnchor="middle" fontSize="10" fill="#8C7355">✕</text>
+                    </g>
+                  </g>
+                )
+              })}
+              {modoConexao && selecionados.length >= 2 && selecionados.slice(0, -1).map((id, i) => {
+                const from = cards.find(c => c.id === id)
+                const to = cards.find(c => c.id === selecionados[i + 1])
+                if (!from || !to) return null
+                return (
+                  <line
+                    key={`sel-${i}`}
+                    x1={from.x + 112} y1={from.y + 40}
+                    x2={to.x + 112} y2={to.y + 40}
+                    stroke="#C4A237"
+                    strokeWidth="1.5"
+                    strokeDasharray="4 4"
+                    opacity="0.9"
+                  />
+                )
+              })}
+            </svg>
+
             {cards.map(card => (
               <div
                 key={card.id}
-                style={{ position: 'absolute', left: card.x, top: card.y, cursor: dragging === card.id ? 'grabbing' : 'grab', zIndex: dragging === card.id ? 50 : 10 }}
-                className="w-56 bg-white border border-[#C4A882] rounded-sm shadow-md select-none"
+                style={{
+                  position: 'absolute',
+                  left: card.x,
+                  top: card.y,
+                  cursor: modoConexao ? 'pointer' : dragging === card.id ? 'grabbing' : 'grab',
+                  zIndex: dragging === card.id ? 50 : 10,
+                }}
+                className={`w-56 bg-white rounded-sm shadow-md select-none transition-all duration-150 border ${
+                  selecionados.includes(card.id)
+                    ? 'border-[#6B8F5E] ring-2 ring-[#6B8F5E]/30'
+                    : 'border-[#C4A882]'
+                }`}
                 onMouseDown={e => onMouseDown(e, card.id)}
               >
-                {/* Card header */}
-                <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#C4A882] bg-[#FAF7F2]">
+                <div className={`flex items-center justify-between px-3 py-1.5 border-b rounded-t-sm ${
+                  selecionados.includes(card.id) ? 'border-[#6B8F5E] bg-[#6B8F5E]/10' : 'border-[#C4A882] bg-[#FAF7F2]'
+                }`}>
                   <span className="text-xs text-[#8C7355] uppercase tracking-widest">{card.tipo}</span>
                   <button
                     onMouseDown={e => e.stopPropagation()}
-                    onClick={() => removerCard(card.id)}
+                    onClick={() => setCardParaRemover(card.id)}
                     className="text-xs text-[#C4A882] hover:text-red-500 transition-colors"
                   >✕</button>
                 </div>
 
-                {/* Card content */}
                 <div className="p-3">
                   {card.tipo === 'texto' ? (
                     <p className="text-xs text-[#3B2F1E] leading-relaxed">{card.conteudo}</p>
@@ -410,7 +637,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Card análise */}
                 <div className="px-3 pb-3">
                   {card.analisando ? (
                     <p className="text-xs text-[#8C7355] italic">Analisando...</p>
@@ -465,7 +691,9 @@ export default function Dashboard() {
               <p className="text-xs text-[#8C7355] uppercase tracking-widest mb-2">Log</p>
               <ul className="space-y-1 text-xs text-[#3B2F1E]">
                 <li>· Cards no board: {cards.length}</li>
+                <li>· Conexões: {conexoes.length}</li>
                 <li>· Registros salvos: {registros.length}</li>
+                <li>· Contemplação: {formatarTempoCura(tempoCuraTotal)}</li>
                 <li>· Último índice: {registros[0]?.indice_etico ?? '—'}%</li>
               </ul>
             </div>
@@ -482,6 +710,32 @@ export default function Dashboard() {
           </div>
         </aside>
       </div>
+
+      {/* Modal de confirmação */}
+      {cardParaRemover && (
+        <div className="fixed inset-0 bg-[#3B2F1E]/40 flex items-center justify-center z-50">
+          <div style={{ fontFamily: "'IM Fell English', Georgia, serif" }} className="bg-[#FAF7F2] border border-[#C4A882] rounded-sm shadow-xl p-8 w-80 flex flex-col gap-5">
+            <div>
+              <p className="text-sm text-[#3B2F1E] tracking-wide">Remover card?</p>
+              <p className="text-xs text-[#8C7355] mt-1 leading-relaxed">Esta ação também apaga as conexões e ideias geradas a partir dele.</p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setCardParaRemover(null)}
+                className="flex-1 border border-[#C4A882] text-[#8C7355] py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/20 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => removerCard(cardParaRemover)}
+                className="flex-1 bg-red-700 text-white py-2 text-xs tracking-widest uppercase hover:bg-red-800 transition-colors"
+              >
+                Remover
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
