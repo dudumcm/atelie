@@ -30,7 +30,7 @@ interface Conexao {
   cardGeradoId: string
 }
 
-const TEMPO_CURA_DURACAO = 45
+const TEMPO_CURA_DURACAO = 20
 
 const REFLEXOES = {
   texto: [
@@ -438,6 +438,7 @@ export default function Dashboard() {
             <textarea
               value={novoTexto}
               onChange={e => setNovoTexto(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); adicionarTexto() } }}
               placeholder="Conceito, descrição ou ideia..."
               rows={3}
               disabled={tempoCura}
@@ -527,12 +528,6 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <div className="p-4 border-t border-red-200">
-            <div className="border border-red-400 rounded-sm p-2 bg-red-50/50">
-              <p className="text-xs text-red-700 font-medium">Quarentena Ética</p>
-              <p className="text-xs text-red-500 mt-0.5">Expira em 14h</p>
-            </div>
-          </div>
         </aside>
 
         {/* Tear — Board */}
@@ -572,7 +567,15 @@ export default function Dashboard() {
 
           {cards.length === 0 && !tempoCura && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <p className="text-sm text-[#C4A882] tracking-wide italic">Adicione elementos pelo Berço</p>
+              <div className="text-center">
+                <p className="text-xs text-[#8C7355] tracking-widest uppercase mb-1">← Berço</p>
+                <p className="text-sm text-[#B0956E] italic mb-6">Comece adicionando um conceito ou imagem pelo painel ao lado.</p>
+                <div className="flex flex-col gap-2 text-xs text-[#C4A882] tracking-wide">
+                  <p>① Adicione um card</p>
+                  <p>② Aguarde a análise ética</p>
+                  <p>③ Conecte cards para gerar novas ideias</p>
+                </div>
+              </div>
             </div>
           )}
 
