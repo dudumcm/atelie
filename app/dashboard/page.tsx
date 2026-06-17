@@ -71,6 +71,7 @@ export default function Dashboard() {
   const [novoTexto, setNovoTexto] = useState('')
   const [indiceGeral, setIndiceGeral] = useState<number | null>(null)
   const [parecerGeral, setParecerGeral] = useState('')
+  const [gerandoParecer, setGerandoParecer] = useState(false)
   const [tempoCura, setTempoCura] = useState(false)
   const [countdown, setCountdown] = useState(7)
   const [dragging, setDragging] = useState<string | null>(null)
@@ -224,6 +225,29 @@ export default function Dashboard() {
         return c - 1
       })
     }, 1000)
+  }
+
+  async function handleGerarLog() {
+    if (!user || indiceGeral === null) return
+    const analisados = cards.filter(c => c.indice > 0)
+    if (analisados.length === 0) return
+
+    setGerandoParecer(true)
+    try {
+      const res = await fetch('/api/parecer-geral', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cards: analisados.map(c => ({ parecer: c.parecer, indice: c.indice })),
+          indiceGeral,
+        }),
+      })
+      const data = await res.json()
+      if (data.parecer) setParecerGeral(data.parecer)
+    } finally {
+      setGerandoParecer(false)
+      carregarRegistros(user.id)
+    }
   }
 
   async function handleLogout() {
@@ -449,10 +473,11 @@ export default function Dashboard() {
 
           <div className="p-4 border-t border-[#C4A882]">
             <button
-              onClick={() => user && carregarRegistros(user.id)}
-              className="w-full bg-[#3B2F1E] text-[#F4EFEA] py-3 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors"
+              onClick={handleGerarLog}
+              disabled={gerandoParecer || indiceGeral === null}
+              className="w-full bg-[#3B2F1E] text-[#F4EFEA] py-3 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors disabled:opacity-40"
             >
-              Gerar Log
+              {gerandoParecer ? 'Analisando...' : 'Gerar Log'}
             </button>
           </div>
         </aside>
