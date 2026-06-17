@@ -116,6 +116,7 @@ export default function Dashboard() {
   const [modoConexao, setModoConexao] = useState(false)
   const [selecionados, setSelecionados] = useState<string[]>([])
   const [conexoes, setConexoes] = useState<Conexao[]>([])
+  const [exportando, setExportando] = useState(false)
   const [gerandoConexao, setGerandoConexao] = useState(false)
   const [erroConexao, setErroConexao] = useState('')
   const [cardParaRemover, setCardParaRemover] = useState<string | null>(null)
@@ -361,6 +362,35 @@ export default function Dashboard() {
     } finally {
       setGerandoParecer(false)
       carregarRegistros(user.id)
+    }
+  }
+
+  async function exportarPDF() {
+    if (cards.length === 0) return
+    setExportando(true)
+    try {
+      const [{ pdf }, { RelatorioPDF }] = await Promise.all([
+        import('@react-pdf/renderer'),
+        import('../components/RelatorioPDF'),
+      ])
+      const blob = await pdf(
+        RelatorioPDF({
+          cards,
+          conexoes,
+          indiceGeral,
+          parecerGeral,
+          tempoCuraTotal,
+          userEmail: user?.email ?? '',
+        })
+      ).toBlob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `atelie-${new Date().toISOString().split('T')[0]}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setExportando(false)
     }
   }
 
@@ -699,13 +729,20 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="p-4 border-t border-[#C4A882]">
+          <div className="p-4 border-t border-[#C4A882] flex flex-col gap-2">
             <button
               onClick={handleGerarLog}
               disabled={gerandoParecer || indiceGeral === null}
               className="w-full bg-[#3B2F1E] text-[#F4EFEA] py-3 text-xs tracking-widest uppercase hover:bg-[#5C4530] transition-colors disabled:opacity-40"
             >
               {gerandoParecer ? 'Analisando...' : 'Gerar Log'}
+            </button>
+            <button
+              onClick={exportarPDF}
+              disabled={exportando || cards.length === 0}
+              className="w-full border border-[#C4A882] text-[#8C7355] py-2 text-xs tracking-widest uppercase hover:bg-[#C4A882]/20 transition-colors disabled:opacity-40"
+            >
+              {exportando ? 'Gerando PDF...' : '↓ Exportar PDF'}
             </button>
           </div>
         </aside>
