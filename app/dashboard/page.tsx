@@ -30,6 +30,39 @@ function indiceColor(indice: number) {
   return '#C4614A'
 }
 
+function formatarData(iso: string) {
+  const d = new Date(iso)
+  const dia = d.getDate().toString().padStart(2, '0')
+  const mes = d.toLocaleString('pt-BR', { month: 'short' }).replace('.', '')
+  const ano = d.getFullYear()
+  const hora = d.getHours().toString().padStart(2, '0')
+  const min = d.getMinutes().toString().padStart(2, '0')
+  return `${dia} ${mes} ${ano} · ${hora}:${min}`
+}
+
+async function comprimirImagem(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      const MAX = 800
+      let w = img.width
+      let h = img.height
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round((h * MAX) / w); w = MAX }
+        else { w = Math.round((w * MAX) / h); h = MAX }
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+      URL.revokeObjectURL(url)
+      resolve(canvas.toDataURL('image/jpeg', 0.7))
+    }
+    img.src = url
+  })
+}
+
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
@@ -53,6 +86,7 @@ export default function Dashboard() {
       } else {
         setUser(data.user)
         carregarRegistros(data.user.id)
+        carregarCards(data.user.id)
       }
       setLoading(false)
     })
@@ -83,6 +117,17 @@ export default function Dashboard() {
     if (data) setRegistros(data)
   }
 
+  async function carregarCards(userId: string) {
+    const { data } = await supabase
+      .from('cards')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true })
+    if (data) {
+      setCards(data.map(c => ({ ...c, analisando: false })))
+    }
+  }
+
   async function analisarCard(id: string, conteudo: string, userId: string) {
     setCards(prev => prev.map(c => c.id === id ? { ...c, analisando: true } : c))
 
@@ -93,58 +138,54 @@ export default function Dashboard() {
     })
 
     const data = await res.json()
+    const parecer = data.parecer ?? 'Sem parecer.'
+    const indice = data.indice ?? 50
+
     setCards(prev => prev.map(c =>
-      c.id === id
-        ? { ...c, parecer: data.parecer ?? 'Sem parecer.', indice: data.indice ?? 50, analisando: false }
-        : c
+      c.id === id ? { ...c, parecer, indice, analisando: false } : c
     ))
+
+    await supabase.from('cards').update({ parecer, indice }).eq('id', id).eq('user_id', userId)
+
     carregarRegistros(userId)
   }
 
-  function adicionarTexto() {
+  async function adicionarTexto() {
     if (!novoTexto.trim() || !user) return
     const id = crypto.randomUUID()
-    const novoCard: Card = {
-      id,
-      tipo: 'texto',
-      conteudo: novoTexto,
-      x: 40 + Math.random() * 200,
-      y: 40 + Math.random() * 100,
-      parecer: '',
-      indice: 0,
-      analisando: false,
-    }
-    setCards(prev => [...prev, novoCard])
+    const x = 40 + Math.random() * 200
+    const y = 40 + Math.random() * 100
+    const conteudo = novoTexto
+
+    setCards(prev => [...prev, { id, tipo: 'texto', conteudo, x, y, parecer: '', indice: 0, analisando: false }])
     setNovoTexto('')
-    analisarCard(id, novoTexto, user.id)
+
+    await supabase.from('cards').insert({ id, user_id: user.id, tipo: 'texto', conteudo, x, y, parecer: '', indice: 0 })
+
+    analisarCard(id, conteudo, user.id)
   }
 
-  function adicionarImagem(e: React.ChangeEvent<HTMLInputElement>) {
+  async function adicionarImagem(e: React.ChangeEvent<HTMLInputElement>) {
     if (!e.target.files?.[0] || !user) return
     const file = e.target.files[0]
-    const reader = new FileReader()
-    reader.onload = () => {
-      const id = crypto.randomUUID()
-      const src = reader.result as string
-      const novoCard: Card = {
-        id,
-        tipo: 'imagem',
-        conteudo: src,
-        x: 40 + Math.random() * 200,
-        y: 40 + Math.random() * 100,
-        parecer: '',
-        indice: 0,
-        analisando: false,
-      }
-      setCards(prev => [...prev, novoCard])
-      analisarCard(id, 'Imagem de referência visual adicionada ao processo criativo.', user.id)
-    }
-    reader.readAsDataURL(file)
     e.target.value = ''
+
+    const conteudo = await comprimirImagem(file)
+    const id = crypto.randomUUID()
+    const x = 40 + Math.random() * 200
+    const y = 40 + Math.random() * 100
+
+    setCards(prev => [...prev, { id, tipo: 'imagem', conteudo, x, y, parecer: '', indice: 0, analisando: false }])
+
+    await supabase.from('cards').insert({ id, user_id: user.id, tipo: 'imagem', conteudo, x, y, parecer: '', indice: 0 })
+
+    analisarCard(id, 'Imagem de referência visual adicionada ao processo criativo.', user.id)
   }
 
-  function removerCard(id: string) {
+  async function removerCard(id: string) {
+    if (!user) return
     setCards(prev => prev.filter(c => c.id !== id))
+    await supabase.from('cards').delete().eq('id', id).eq('user_id', user.id)
   }
 
   const onMouseDown = useCallback((e: React.MouseEvent, id: string) => {
@@ -164,7 +205,15 @@ export default function Dashboard() {
     ))
   }, [dragging, dragOffset])
 
-  const onMouseUp = useCallback(() => setDragging(null), [])
+  const onMouseUp = useCallback(async () => {
+    if (dragging && user) {
+      const card = cards.find(c => c.id === dragging)
+      if (card) {
+        await supabase.from('cards').update({ x: card.x, y: card.y }).eq('id', dragging).eq('user_id', user.id)
+      }
+    }
+    setDragging(null)
+  }, [dragging, cards, user])
 
   function ativarTempoCura() {
     setTempoCura(true)
@@ -255,7 +304,18 @@ export default function Dashboard() {
             {registros.length === 0 && <p className="text-xs text-[#B0956E] italic">Nenhum registro ainda.</p>}
             {registros.map(r => (
               <div key={r.id} className="border border-[#C4A882] rounded-sm p-2 bg-white/40">
-                <p className="text-xs text-[#3B2F1E] line-clamp-2">{r.descricao}</p>
+                <div className="flex items-start justify-between gap-1">
+                  <p className="text-xs text-[#3B2F1E] line-clamp-2 flex-1">{r.descricao}</p>
+                  <div className="relative shrink-0 group/clock">
+                    <button className="text-[#C4A882] hover:text-[#8C7355] transition-colors leading-none mt-0.5 text-[11px]">◷</button>
+                    <div className="absolute right-0 bottom-full mb-1.5 hidden group-hover/clock:block z-30 pointer-events-none">
+                      <div className="bg-[#3B2F1E] text-[#F4EFEA] text-[10px] tracking-wide px-2 py-1 rounded-sm whitespace-nowrap">
+                        {formatarData(r.created_at)}
+                      </div>
+                      <div className="w-1.5 h-1.5 bg-[#3B2F1E] rotate-45 ml-auto mr-1 -mt-1" />
+                    </div>
+                  </div>
+                </div>
                 <p className="text-xs mt-1" style={{ color: indiceColor(r.indice_etico) }}>{r.indice_etico}%</p>
               </div>
             ))}
